@@ -10,6 +10,8 @@ use mime_guess;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use nanoid::nanoid;
+
 
 const UPLOAD_PASSWORD: &str = "meow";
 const PUBLIC_URL: &str = "https://sharex.getdoxxedbyamir.lol";
@@ -28,21 +30,36 @@ fn validate_password(req: &actix_web::HttpRequest) -> bool {
     }
     false
 }
+
 #[post("/upload")]
 async fn upload(mut payload: Multipart, req: actix_web::HttpRequest) -> impl Responder {
+    let id = nanoid!(8);
     if !validate_password(&req) {
         return HttpResponse::Unauthorized().body("Invalid password.");
     }
 
-    let mut filename = String::new();
     let mut file_size = 0;
+    let mut saved_filename = String::new();
+
     while let Some(item) = payload.next().await {
         let mut field = item.unwrap();
         let content_disposition = field.content_disposition().unwrap();
-        if let Some(file_name) = content_disposition.get_filename() {
-            filename = file_name.to_string();
-            let filepath = format!("./uploads/{}", filename);
 
+        if content_disposition.get_filename().is_some() {
+            //NOTE: i extract file ext here 
+            let original_filename = content_disposition.get_filename().unwrap();
+            let extension = std::path::Path::new(original_filename)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or("");
+
+            saved_filename = if extension.is_empty() {
+                id.clone()
+            } else {
+                format!("{}.{}", id, extension)
+            };
+
+            let filepath = format!("./uploads/{}", saved_filename);
             let mut f = std::fs::File::create(filepath).unwrap();
 
             while let Some(Ok(chunk)) = field.next().await {
@@ -52,7 +69,7 @@ async fn upload(mut payload: Multipart, req: actix_web::HttpRequest) -> impl Res
         }
     }
 
-    let file_url = format!("{}/file/{}", PUBLIC_URL, filename);
+    let file_url = format!("{}/file/{}", PUBLIC_URL, saved_filename);
 
     println!(
         "File uploaded successfully: {}\nFile size: {} bytes",
@@ -64,6 +81,10 @@ async fn upload(mut payload: Multipart, req: actix_web::HttpRequest) -> impl Res
         file_url,
     })
 }
+
+
+
+
 
 #[get("/")]
 async fn hello() -> impl Responder {
