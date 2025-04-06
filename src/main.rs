@@ -13,19 +13,42 @@ use std::path::PathBuf;
 use nanoid::nanoid;
 
 
+use std::env;
+use dotenvy::dotenv;
+
+
+/*
 const UPLOAD_PASSWORD: &str = "meow";
 const PUBLIC_URL: &str = "https://sharex.getdoxxedbyamir.lol";
+*/
+
+lazy_static::lazy_static! {
+    static ref UPLOAD_PASSWORD: String = env::var("UPLOAD_PASSWORD").expect("UPLOAD_PASSWORD not set");
+    static ref PUBLIC_URL: String = env::var("PUBLIC_URL").expect("PUBLIC_URL not set");
+
+}
+
+
+
+/*
+TODO: 
+implement dotenv
+implement hmac based delete url
+*/
+
+
 
 #[derive(Serialize)]
 struct UploadResponse {
     success: bool,
-    file_url: String,
+    url: String,
+    delete_url: String,
 }
 
 fn validate_password(req: &actix_web::HttpRequest) -> bool {
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_value) = auth_header.to_str() {
-            return auth_value == format!("Bearer {}", UPLOAD_PASSWORD);
+            return auth_value == format!("Bearer {}", *UPLOAD_PASSWORD);
         }
     }
     false
@@ -46,7 +69,7 @@ async fn upload(mut payload: Multipart, req: actix_web::HttpRequest) -> impl Res
         let content_disposition = field.content_disposition().unwrap();
 
         if content_disposition.get_filename().is_some() {
-            //NOTE: i extract file ext here 
+            //NOTE: we extract file ext here 
             let original_filename = content_disposition.get_filename().unwrap();
             let extension = std::path::Path::new(original_filename)
                 .extension()
@@ -69,16 +92,17 @@ async fn upload(mut payload: Multipart, req: actix_web::HttpRequest) -> impl Res
         }
     }
 
-    let file_url = format!("{}/file/{}", PUBLIC_URL, saved_filename);
-
+    let file_url = format!("{}/{}", *PUBLIC_URL, saved_filename);
+    let delete_url = format!("{}/delete/{}", *PUBLIC_URL, saved_filename);
     println!(
-        "File uploaded successfully: {}\nFile size: {} bytes",
-        file_url, file_size
+        "File uploaded successfully: {}\nDelete url: {}\nFile size: {} bytes",
+        file_url,delete_url, file_size
     );
 
     HttpResponse::Ok().json(UploadResponse {
         success: true,
-        file_url,
+        url: file_url,
+        delete_url: delete_url,
     })
 }
 
@@ -104,6 +128,8 @@ fn human_readable_size(size: u64) -> String {
     format!("{:.2} {}", size, suffixes[index])
 }
 
+
+
 #[get("/{filename}")]
 async fn get_file_info(filename: web::Path<String>) -> Result<HttpResponse> {
     let filepath = format!("./uploads/{}", filename);
@@ -128,7 +154,7 @@ async fn get_file_info(filename: web::Path<String>) -> Result<HttpResponse> {
         .to_string();
 
     let mut og_tag = String::new();
-    let file_url = format!("{}/file/{}", PUBLIC_URL, filename);
+    let file_url = format!("{}/file/{}", *PUBLIC_URL, filename);
 
     if mime_type.starts_with("image/") {
         og_tag = format!(
@@ -205,6 +231,30 @@ async fn get_file(req: HttpRequest, filename: web::Path<String>) -> Result<HttpR
     Ok(file.into_response(&req))
 }
 
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    dotenv().ok();
+    env_logger::init();
+    println!("UPLOAD_PASSWORD: {}", *UPLOAD_PASSWORD);
+    println!("PUBLIC_URL: {}", *PUBLIC_URL);
+
+    info!("Starting the server...");
+
+    HttpServer::new(|| {
+        App::new()
+            .service(hello)
+            .service(upload)
+            .service(get_file)
+            .service(get_file_info)
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await
+}
+
+
+/*
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
@@ -222,3 +272,4 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
+*/
