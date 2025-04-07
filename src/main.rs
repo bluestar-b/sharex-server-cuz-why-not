@@ -30,6 +30,7 @@ lazy_static::lazy_static! {
 TODO: 
 implement dotenv: done
 implement hmac based delete url:done
+* fix hmac token
 */
 
 
