@@ -1,6 +1,6 @@
 use actix_files::NamedFile;
 use actix_multipart::Multipart;
-use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, Result, get, post, web};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, Result, get, post, delete, web};
 use futures::StreamExt;
 use log::info;
 use serde::Serialize;
@@ -12,15 +12,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use nanoid::nanoid;
 
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
 use std::env;
 use dotenvy::dotenv;
-
-
-/*
-const UPLOAD_PASSWORD: &str = "meow";
-const PUBLIC_URL: &str = "https://sharex.getdoxxedbyamir.lol";
-*/
 
 lazy_static::lazy_static! {
     static ref UPLOAD_PASSWORD: String = env::var("UPLOAD_PASSWORD").expect("UPLOAD_PASSWORD not set");
@@ -32,8 +28,8 @@ lazy_static::lazy_static! {
 
 /*
 TODO: 
-implement dotenv
-implement hmac based delete url
+implement dotenv: done
+implement hmac based delete url:done
 */
 
 
@@ -53,6 +49,22 @@ fn validate_password(req: &actix_web::HttpRequest) -> bool {
     }
     false
 }
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn generate_hmac(filename: &str) -> String {
+    let mut mac = HmacSha256::new_from_slice(UPLOAD_PASSWORD.as_bytes())
+        .expect("HMAC can take key of any size");
+    mac.update(filename.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+fn verify_hmac(filename: &str, token: &str) -> bool {
+    let expected = generate_hmac(filename);
+    constant_time_eq::constant_time_eq(expected.as_bytes(), token.as_bytes())
+}
+
+
 
 #[post("/upload")]
 async fn upload(mut payload: Multipart, req: actix_web::HttpRequest) -> impl Responder {
@@ -93,7 +105,10 @@ async fn upload(mut payload: Multipart, req: actix_web::HttpRequest) -> impl Res
     }
 
     let file_url = format!("{}/{}", *PUBLIC_URL, saved_filename);
-    let delete_url = format!("{}/delete/{}", *PUBLIC_URL, saved_filename);
+   // let delete_url = format!("{}/delete/{}", *PUBLIC_URL, saved_filename);
+   let hmac = generate_hmac(&saved_filename);
+   let delete_url = format!("{}/delete/{}/{}", *PUBLIC_URL, hmac, saved_filename);
+
     println!(
         "File uploaded successfully: {}\nDelete url: {}\nFile size: {} bytes",
         file_url,delete_url, file_size
@@ -107,6 +122,26 @@ async fn upload(mut payload: Multipart, req: actix_web::HttpRequest) -> impl Res
 }
 
 
+#[delete("/delete/{hmac}/{filename}")]
+async fn delete_file(path: web::Path<(String, String)>) -> Result<HttpResponse> {
+
+    let (hmac, filename) = path.into_inner();
+
+    if !verify_hmac(&filename, &hmac) {
+        return Ok(HttpResponse::Unauthorized().body("Invalid delete token"));
+    }
+
+    let filepath = format!("./uploads/{}", filename);
+    let path = Path::new(&filepath);
+    //println!("Attempting to delete: {:?}", path.canonicalize());
+
+    if path.exists() {
+        fs::remove_file(path)?;
+        Ok(HttpResponse::Ok().body("File deleted successfully"))
+    } else {
+        Ok(HttpResponse::NotFound().body("File not found"))
+    }
+}
 
 
 
@@ -114,6 +149,11 @@ async fn upload(mut payload: Multipart, req: actix_web::HttpRequest) -> impl Res
 async fn hello() -> impl Responder {
     HttpResponse::Ok().body("Still alive btw")
 }
+
+
+
+
+
 
 fn human_readable_size(size: u64) -> String {
     let suffixes = ["B", "KB", "MB", "GB", "TB"];
@@ -218,6 +258,10 @@ async fn get_file_info(filename: web::Path<String>) -> Result<HttpResponse> {
         .body(html))
 }
 
+
+
+
+
 #[get("/file/{filename}")]
 async fn get_file(req: HttpRequest, filename: web::Path<String>) -> Result<HttpResponse> {
     let filepath: PathBuf = format!("./uploads/{}", filename.into_inner()).into();
@@ -236,7 +280,7 @@ async fn get_file(req: HttpRequest, filename: web::Path<String>) -> Result<HttpR
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
     env_logger::init();
-    println!("UPLOAD_PASSWORD: {}", *UPLOAD_PASSWORD);
+   // println!("UPLOAD_PASSWORD: {}", *UPLOAD_PASSWORD);
     println!("PUBLIC_URL: {}", *PUBLIC_URL);
 
     info!("Starting the server...");
@@ -247,6 +291,7 @@ async fn main() -> std::io::Result<()> {
             .service(upload)
             .service(get_file)
             .service(get_file_info)
+            .service(delete_file)
     })
     .bind(("127.0.0.1", 8080))?
     .run()
@@ -254,22 +299,4 @@ async fn main() -> std::io::Result<()> {
 }
 
 
-/*
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    env_logger::init();
 
-    info!("Starting the server...");
-
-    HttpServer::new(|| {
-        App::new()
-            .service(hello)
-            .service(upload)
-            .service(get_file)
-            .service(get_file_info)
-    })
-    .bind(("127.0.0.1", 8080))?
-    .run()
-    .await
-}
-*/
